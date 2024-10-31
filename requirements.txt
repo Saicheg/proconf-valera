@@ -1,0 +1,11 @@
+PyAudio==0.2.14
+numpy==1.26.4
+scipy==1.14.1
+silero-vad==5.1.2
+vosk==0.3.44
+navec==0.10.0
+colorlog==6.9.0
+pydub==0.25.1
+python-dotenv==1.0.1
+websocket-client==1.7.0
+websockets==13.1
