@@ -1,11 +1,9 @@
 import os
 import logging
 import json
-import time
 import asyncio
 import pyaudio
 import base64
-import io
 import colorlog
 import queue
 import numpy as np
@@ -14,8 +12,9 @@ from silero_vad import load_silero_vad, VADIterator
 from vosk import Model, KaldiRecognizer
 from navec import Navec
 from websockets.asyncio.client import connect
-from pydub import AudioSegment
 from dotenv import load_dotenv
+from InquirerPy.resolver import prompt
+import argparse
 
 load_dotenv()
 
@@ -74,21 +73,38 @@ REALTIME_SESSION_OBJECT = {
 
 LONG_SILENCE = b'\x00\x00' * INPUT_SAMPLING_RATE * 5
 
-p = pyaudio.PyAudio()
-info = p.get_host_api_info_by_index(0)
-numdevices = info.get('deviceCount')
+def list_devices():
+    p = pyaudio.PyAudio()
+    info = p.get_host_api_info_by_index(0)
+    numdevices = info.get('deviceCount')
 
-for i in range(0, numdevices):
-    if (p.get_device_info_by_host_api_device_index(0, i).get('maxInputChannels')) > 0:
-        logger.info("Input Device id " + str(i) + " - " + p.get_device_info_by_host_api_device_index(0, i).get('name'))
+    input_devices = []
+    output_devices = []
 
+    for i in range(0, numdevices):
+        device_info = p.get_device_info_by_host_api_device_index(0, i)
+        if device_info.get('maxInputChannels') > 0:
+            input_devices.append((i, device_info.get('name')))
+        if device_info.get('maxOutputChannels') > 0:
+            output_devices.append((i, device_info.get('name')))
 
-for i in range(0, numdevices):
-    if (p.get_device_info_by_host_api_device_index(0, i).get('maxOutputChannels')) > 0:
-        logger.info("Output Device id " + str(i) + " - " + p.get_device_info_by_host_api_device_index(0, i).get('name'))
+    p.terminate()
+    return input_devices, output_devices
+
+def select_device(devices, device_type):
+    choices = [{"name": f"{index}: {name}", "value": index} for index, name in devices]
+    questions = [
+        {
+            "type": "list",
+            "message": f"Select {device_type} device:",
+            "choices": choices,
+        }
+    ]
+    selected_device = prompt(questions)[0]
+    return selected_device
 
 class ProconfAgent:
-    def __init__(self):
+    def __init__(self, loop, input_device_index, output_device_index):
         self._input_buffer = asyncio.Queue()
         self._output_buffer = queue.Queue()
         self._websocket_buffer = asyncio.Queue()
@@ -96,7 +112,9 @@ class ProconfAgent:
         self._leftover_buffer = None
 
         self._closed = True
-        self._loop = None
+        self._loop = loop
+        self._input_device_index = input_device_index
+        self._output_device_index = output_device_index
         self._vad_iterator = VADIterator(load_silero_vad(), sampling_rate=VAD_SAMPLING_RATE)
         self._speaking = False
         self._active = False
@@ -159,19 +177,19 @@ class ProconfAgent:
             input=True,
             channels=1,
             rate=INPUT_SAMPLING_RATE,
-            input_device_index=8,
+            input_device_index=self._input_device_index,
             frames_per_buffer=512 * 3,
-            stream_callback=self.__callback
+            stream_callback=self.__callback,
         )
         self._output = self._pyaudio_obj.open(
             format=pyaudio.paInt16,
             output=True,
             channels=1,
             rate=OUTPUT_SAMPLING_RATE,
-            output_device_index=9,
+            output_device_index=self._output_device_index,
             frames_per_buffer=OUTPUT_BUFFER_SIZE,
             stream_callback=self.__output_callback,
-            start=False
+            start=False,
         )
         self._closed = False
 
@@ -188,9 +206,6 @@ class ProconfAgent:
         del(self._websocket_buffer)
 
     async def run(self):
-        if self._loop is None:
-            self._loop = asyncio.get_running_loop()
-
         await self.listen()
 
     def clear_output_buffer(self):
@@ -340,15 +355,35 @@ class ProconfAgent:
                 status, chunk = await self._input_buffer.get()
                 yield status, chunk
             except asyncio.QueueEmpty:
-                self._loop.stop()
+                if self._loop is not None:
+                    self._loop.stop()
                 break
 
-async def main():
-    async with ProconfAgent() as valera:
+async def run(input_device_index, output_device_index):
+    loop = asyncio.get_running_loop()
+
+    async with ProconfAgent(loop, input_device_index, output_device_index) as valera:
         await valera.run()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        parser = argparse.ArgumentParser(description="ProconfAgent CLI")
+        parser.add_argument("--input_device_index", type=int, help="Index of the input device")
+        parser.add_argument("--output_device_index", type=int, help="Index of the output device")
+        args = parser.parse_args()
+
+        input_device_index = args.input_device_index
+        output_device_index = args.output_device_index
+
+        if input_device_index is None or output_device_index is None:
+            input_devices, output_devices = list_devices()
+
+            if input_device_index is None:
+                input_device_index = select_device(input_devices, "input")
+
+            if output_device_index is None:
+                output_device_index = select_device(output_devices, "output")
+
+        asyncio.run(run(input_device_index, output_device_index))
     except KeyboardInterrupt:
         print("Terminating...")
