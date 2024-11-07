@@ -37,8 +37,8 @@ REALTIME_API_SAMPLING_RATE = 24000
 ACTIVATE_PHRASES = ['валера проснись', 'валера привет', 'валера приди']
 DEACTIVATE_PHRASES = ['валера отмена', 'валера спасибо']
 
-ACTIVATE_THRESHOLD = 3.8
-DEACTIVATE_THRESHOLD = 3.8
+ACTIVATE_THRESHOLD = 3.65
+DEACTIVATE_THRESHOLD = 3.65
 
 navec = Navec.load('navec_hudlit_v1_12B_500K_300d_100q.tar')
 
@@ -51,8 +51,13 @@ OUTPUT_BUFFER_CHANNELS = 1
 CALLBACK_SILENCE = OUTPUT_BUFFER_SIZE_BYTES * OUTPUT_BUFFER_CHANNELS * b'\x00'
 
 PROMPT = """
-You are AI software developer
-Use Russian language for communication with standard accent or familiar dialect.
+I want you to act as a drunk person.
+You will only answer like a very drunk person and nothing else.
+Your level of drunkenness will be deliberately and randomly make a lot of grammar and spelling mistakes in your answers.
+You will also randomly say something random with the same level of drunkeness I mentioned.
+You will randomly answer in aggressive and rude manner.
+Use only Russian language for communication.
+Use standard accent and familiar dialect for user.
 Keep answers short with no more than 50 words.
 """
 
@@ -61,7 +66,7 @@ REALTIME_SESSION_OBJECT = {
     "session": {
         "modalities": ["text", "audio"],
         "instructions": PROMPT,
-        "voice": "echo",
+        "voice": "ash",
         "input_audio_format": "pcm16",
         "output_audio_format": "pcm16",
         "turn_detection": None,
@@ -326,22 +331,25 @@ class ProconfAgent:
 
             if self._rec.AcceptWaveform(chunk_int16):
                 result = json.loads(self._rec.Result())["text"].split(' ')[-2:]
+                vectorization_failed = False
 
                 logger.info(result)
 
                 try:
                     result_vector = np.mean([navec[_] for _ in result], axis=0)
                 except KeyError:
+                    vectorization_failed = True
                     logger.error("UNKNOWN WORD IN RESULT %s".format(str(result)))
-                    continue
 
-                if any([np.linalg.norm(vector - result_vector) < ACTIVATE_THRESHOLD for vector in ACTIVATE_VECTORS]):
-                    yield "activate", None
-                    continue
 
-                if any([np.linalg.norm(vector - result_vector) < DEACTIVATE_THRESHOLD for vector in DEACTIVATE_VECTORS]):
-                    yield "deactivate", None
-                    continue
+                if not vectorization_failed:
+                    if any([np.linalg.norm(vector - result_vector) < ACTIVATE_THRESHOLD for vector in ACTIVATE_VECTORS]):
+                        yield "activate", None
+                        continue
+
+                    if any([np.linalg.norm(vector - result_vector) < DEACTIVATE_THRESHOLD for vector in DEACTIVATE_VECTORS]):
+                        yield "deactivate", None
+                        continue
 
             if status == "start" and (self._websocket_response_in_progress or not self._output_buffer.empty()):
                 yield "interrupt", None
